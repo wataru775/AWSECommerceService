@@ -29,13 +29,28 @@ class ValidUtilTest extends PHPUnit_Framework_TestCase
     }
 
     /**
+     * 正常なISBNコード
      * @covers ValidUtil::validISBN
-     * @todo   Implement testValidISBN().
+     * @todo   Implement testValidISBN()
      */
     public function testValidISBN() {
         $this->assertTrue(
                  $this->object->validISBN("9784063620597")
         );
     }
-
+    public function testValidISBN_ERROR_TOO_SHORT(){
+        $this->assertEquals(
+                "ISBN too short. length : 3" , $this->object->validISBN("978")
+        );
+    }
+    public function testValidISBN_ERROR_TOO_LONG(){
+        $this->assertEquals(
+                "ISBN too long. length : 14" , $this->object->validISBN("97840636205971")
+        );
+    }
+    public function testValidISBN_ERROR_NOT_VALID(){
+        $this->assertEquals(
+                "Input checksum digit incorrect: ISBN not valid" , $this->object->validISBN("9784063620590")
+        );
+    }
 }

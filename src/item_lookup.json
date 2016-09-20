@@ -1,195 +1,79 @@
-	<?php
-		header("Cache-Control: no-cache, must-revalidate");
-		header("Content-type: application/json; charset=utf-8");
+<?php
+    require_once("./libs/ValidUtil.php");
+    header("Cache-Control: no-cache, must-revalidate");
+    header("Content-type: application/json; charset=utf-8");
 
-		$ISBN     = $_GET["isbn"];
+    $ISBN     = $_GET["isbn"];
 
-		if( !$ISBN ) {
-                    printError( " 引数が不正です ( ISBN =" . $ISBN . ") ");
-                    return ;
-		}
-		if( !validISBN($ISBN) ) {
-                    printError( " ISBNの値が不正です ( ISBN =" . $ISBN . ") ");
-                    return ;
-		}
-		require_once("./libs/Book.php");
-		require_once("./libs/Author.php");
+    if( !$ISBN ) {
+        printError( " 引数が不正です ( ISBN =" . $ISBN . ") ");
+        return ;
+    }
+    
+    if( ($ERROR_MSG=  ValidUtil::validISBN($ISBN)) != TRUE ) {
+        printError( " ISBNの値が不正です ( " . $ERROR_MSG . ") ");
+        return ;
+    }
 
-		$request = createURL($ISBN);
+    require_once("./libs/Book.php");
+    require_once("./libs/Author.php");
+    require_once("./libs/AmazonUtil.php");
 
-		$response   = file_get_contents($request);
-                
-                if( $response == "FALSE" ) {
-                    printError( " AWSECommerveServiceへ正しく接続出来ませんでした ");
-                    return ;
-		}
+    $request = AmazonUtil::createURL($ISBN);
 
-		$parsed_xml = simplexml_load_string($response);
-                if( $parsed_xml == "FALSE" ) {
-                    printError( " AWSECommerveServiceの回答が解析できませんでした ");
-                    return ;
-		}
+    $response   = file_get_contents($request);
 
-		// Get AWS 判定
-		if( $parsed_xml->Items->Request->IsValid != 'True' ) {
-                    printError( " AWSECommerveServiceのリクエストが不正です ");
-                    return ;
-                }
-                
-		$Item       = $parsed_xml->Items->Item;
-		$Attributes = $Item->ItemAttributes;
+    if( $response == "FALSE" ) {
+        printError( " AWSECommerveServiceへ正しく接続出来ませんでした ");
+        return ;
+    }
 
-		$book = new Book();
-		$book->isbn = (string)$Attributes->ISBN;
-		$book->asin = (string)$Item->ASIN;
-		$book->ean = (string)$Attributes->EAN;
-		$book->title = (string)$Attributes->Title;
-		$book->image_url = (string)$Item->MediumImage->URL;
-		$book->pubdate = (string)$Attributes->PublicationDate;
-		$book->price = (string)$Attributes->ListPrice->Amount;
-		$book->pages = (string)$Attributes->NumberOfPages;
-		$book->publisher = (string)$Attributes->Publisher;
-		$book->binding = (string)$Attributes->Binding;
-		$book->currency_cd = (string)$Attributes->ListPrice->CurrencyCode;
+    try{
+        $parsed_xml = simplexml_load_string($response);
 
-		$author_names = array();
-		foreach( $Attributes->Author as $author_name ) {
-			$author_names[] = $author_name;
-		}
-		foreach( $Attributes->Creator as $creator ) {
-			$author_names[] = $creator;
-		}
+        if( $parsed_xml == "FALSE" ) {
+            printError( " AWSECommerveServiceの回答が解析できませんでした ");
+            return ;
+        }
+        // Get AWS 判定
+        if( $parsed_xml->Items->Request->IsValid != "True" ) {
+            printError( " AWSECommerveServiceのリクエストが不正です ");
+            return ;
+        }
+    }catch(Exception $e){
+        restore_error_handler();  
+        echo $e;  
+        return ;
+    }
 
-                $author_array = array();
-		for ( $i=0; $i<sizeof($author_names); $i++ ) {
-			$author = new Author();
-			$author->author = (string)($author_names[$i]);
-			$author->role = (string)($author_names[$i]['Role']);
-			$author_array[] = $author;
-		}
+    // Amazonからの応答を書籍情報に変換します
+    $book = AmazonUtil::castResultToBook($parsed_xml);
 
-		$book->authors = $author_array;
+    if ( !$book->isbn ) {
+        printError( " No book found for ISBN =" . $ISBN . " in Amazon DB  ");
+        $book = NULL;
+        return;
+    }
 
-		if ( !$book->isbn ) {
-                    printError( " No book found for ISBN =" . $ISBN . " in Amazon DB  ");
-                    $book = NULL;
-                    $author_array=NULL;
-                    return;
-		}
+    echo json_encode(
+        array(
+            "IsValid" => "TRUE",
+            "RESULT" => $book
+        ),JSON_UNESCAPED_UNICODE
+    );
+    $book = NULL;
 
-                    echo json_encode(
-                        array(
-                            "IsValid" => "TRUE",
-                            "RESULT" => $book
-                        ),JSON_UNESCAPED_UNICODE
-                    );
-		$book = NULL;
-		$author_array=NULL;
-
-		?>
-		<?php 
-		function createURL($isbn){
-			$config = parse_ini_file("./libs/account.properties",true);
-
-			// Amazon Sample
-			// http://webservices.amazon.co.jp/scratchpad/index.html
-
-			// Your AWS Access Key ID, as taken from the AWS Your Account page
-			$aws_access_key_id = $config['amazon']['AccessKeyId'];
-			// Your AWS Secret Key corresponding to the above ID, as taken from the AWS Your Account page
-			$aws_secret_key = $config['amazon']['SecretKey'];
-
-			$associate_tag = $config['amazon']['AssociateTag'];
-
-			// The region you are interested in
-			$endpoint = "webservices.amazon.co.jp";
-
-			$uri = "/onca/xml";
-
-			$params = array(
-				"Service" => "AWSECommerceService",
-				"Operation" => "ItemLookup",
-				"AWSAccessKeyId" => $aws_access_key_id ,
-				"AssociateTag" => $associate_tag ,
-				"ResponseGroup" => "Large",
-				"ItemId" => $isbn ,
-				"SearchIndex" => "Books",
-				"IdType" => "ISBN"
-			);
-
-			// Set current timestamp if not set
-			if (!isset($params["Timestamp"])) {
-				$params["Timestamp"] = gmdate('Y-m-d\TH:i:s\Z');
-			}
-
-			// Sort the parameters by key
-			ksort($params);
-
-			$pairs = array();
-
-			foreach ($params as $key => $value) {
-				array_push($pairs, rawurlencode($key)."=".rawurlencode($value));
-			}
-
-			// Generate the canonical query
-			$canonical_query_string = join("&", $pairs);
-
-			// Generate the string to be signed
-			$string_to_sign = "GET\n".$endpoint."\n".$uri."\n".$canonical_query_string;
-
-			// Generate the signature required by the Product Advertising API
-			$signature = base64_encode(hash_hmac("sha256", $string_to_sign, $aws_secret_key, true));
-
-			// Generate the signed URL
-			$request_url = 'http://'.$endpoint.$uri.'?'.$canonical_query_string.'&Signature='.rawurlencode($signature);
-
-			return $request_url;
-		}
-		// https://memo.dogmap.jp/2013/02/20/php-valid-isbn/
-		function validISBN($isbn) {
-			if (strlen($isbn) < 12){
-				$output = array('error'=>'ISBN too short. length : ' . strlen($isbn));
-				var_dump( $output );
-				return false;
-			}
-			if (strlen($isbn) > 13){
-				$output = array('error'=>'ISBN too long. length : ' . strlen($isbn));
-				var_dump( $output );
-				return false;
-			}
-			$runningTotal = 0;
-			$r = 1;
-			$multiplier = 1;
-			for ($i = 0; $i < 13 ; $i++){
-				$nums[$r] = substr($isbn, $i, 1);
-				$r++;
-			}
-			$inputChecksum = array_pop($nums);
-			foreach($nums as $key => $value){
-				$runningTotal += $value * $multiplier;
-				$multiplier = $multiplier == 3 ? 1 : 3;
-			}
-			$div = $runningTotal / 10;
-			$remainder = $runningTotal % 10;
-
-			$checksum = $remainder == 0 ? 0 : 10 - substr($div, -1);
-			if (is_numeric($inputChecksum) && $inputChecksum != $checksum){
-				$output['error'] = 'Input checksum digit incorrect: ISBN not valid';
-				$output['input_checksum'] = $inputChecksum;
-				var_dump( $output );
-				return false;
-			}
-
-			return true;
-		}
-                
-                function printError($message){
-                    echo json_encode(
-                        array(
-                            "IsValid" => "FALSE",
-                            "ERROR" => $message
-                        ),JSON_UNESCAPED_UNICODE
-                    );
-                }
+    /**
+     * エラーを出力します
+     * @param type $message エラーメッセージ
+     */
+    function printError($message){
+        echo json_encode(
+            array(
+                "IsValid" => "FALSE",
+                "ERROR" => $message
+            ),JSON_UNESCAPED_UNICODE
+        );
+    }                
 
 ?>
